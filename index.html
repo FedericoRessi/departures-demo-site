@@ -24,7 +24,7 @@
     <div id="map"></div>
     Latitute:  <input id="latitude"></input>
     Longitude: <input id="longitude"></input>
-    Radius:    <input id="radius"></input>
+    Zoom:    <input id="zoom"></input>
     <button onclick="view.centerCurrentPosition()">Center</button>
 </body>
 
@@ -58,44 +58,45 @@ var log = {
 };
 
 function Model() {
-    this.position = {lat: 56.163357, lng: 10.216666};
-    this.radius = 500;
-    this.requiredStops = {};
+    this.bounds = {
+        sw: {lat: 56.163357, lng: 10.216666},
+        ne :{lat: 56.163357, lng: 10.216666}
+    };
     this.stops = {};
     this.currentStop = null;
     this.buses = [];
     this.transit = [{"url": "https://transit.land", "name": "test", "location": {"lat": null, "lng": null}}];
+    this.zoom = 15;
 }
 
-Model.prototype.setPosition = function(position) {
-    if (this.position.lat == position.lat &&
-        this.position.lng == position.lng) {
+Model.prototype.setBounds = function(bounds) {
+    if (
+        this.bounds.east == bounds.east &&
+        this.bounds.north == bounds.north &&
+        this.bounds.west == bounds.west &&
+        this.bounds.south == bounds.south
+    ) {
         return false;
     } else {
-        this.position = position;
+        this.bounds = bounds;
         return true
     }
 }
 
-Model.prototype.setRadius = function(radius) {
-    if (this.radius == radius) {
-        return false;
-    } else {
-        this.radius = radius;
-        return true;
+Model.prototype.getCenter = function() {
+    return {
+        lat: (this.bounds.south + this.bounds.north) * 0.5,
+        lng: (this.bounds.east + this.bounds.west) * 0.5
     }
+}
+
+Model.prototype.setZoom = function(zoom) {
+    this.zoom = zoom
 }
 
 Model.prototype.pushStop = function(stop) {
     var stopId = stop.stopId;
-    delete this.requiredStops[stopId];
     this.stops[stop.stopId] = stop;
-}
-
-Model.prototype.pushRequiredStop = function(stopId) {
-    if (!(stopId in this.stops)){
-        this.requiredStops[stopId] = true;
-    }
 }
 
 Model.prototype.setCurrentStop = function(stopId) {
@@ -131,11 +132,11 @@ function Presenter(view, model) {
 
 Presenter.prototype.centerCurrentPosition = function() {
     if (navigator.geolocation) {
-        var presenter = this;
+        var self = this;
         log.debug("Get user position...");
         navigator.geolocation.getCurrentPosition(
             function (position) {
-                presenter.setPosition({
+                self.view.centerPosition({
                     lat: position.coords.latitude,
                     lng: position.coords.longitude
                 });
@@ -147,47 +148,36 @@ Presenter.prototype.centerCurrentPosition = function() {
     }
 }
 
-Presenter.prototype.setPosition = function(position) {
-    if (this.model.setPosition(position)) {
-        log.debug("Center user position:", this.model.position);
-        this.view.updatePosition();
-        if (!this._stopRequested) {
-            this._stopRequested = true;
-            self = this;
-            window.setTimeout(function() {self.requestStops()}, 500.);
+Presenter.prototype.setBounds = function(bounds) {
+    if (this.model.setBounds(bounds)) {
+        if (this.model.zoom > 13) {
+            log.debug("Set bounds:", this.model.bounds);
+            if (!this._stopRequested) {
+                this._stopRequested = true;
+                self = this;
+                window.setTimeout(function() {self.requestStops()}, 500.);
+            }
         }
+        this.view.updateCenter();
     } else {
         log.debug("Same location.");
     }
 }
 
-Presenter.prototype.setRadius = function(radius) {
-    if (this.model.setRadius(radius)) {
-        log.debug("Set user radius:", this.model.radius);
-        this.view.updateRadius();
-        if (!this._stopRequested) {
-            this._stopRequested = true;
-            self = this;
-            window.setTimeout(function() {self.requestStops()}, 500.);
-        }
-    } else {
-        log.debug("Same radius.");
-    }
+Presenter.prototype.setZoom = function(zoom) {
+    this.model.setZoom(zoom);
+    this.view.updateZoom(zoom);
 }
 
 Presenter.prototype.requestStops = function() {
     this._stopRequested = false;
 
-    if (this.model.radius <= 1000.){
-        log.debug("Get stops:", this.model.position, this.model.radius);
-        var self = this;
-        this.transit.requestStops(
-            this.model.position, this.model.radius,
-            function(stops) {self.receiveStops(stops)}
-        ).send();
-    } else {
-        log.debug("Don't get stops for radius bigger than 1Km.");
-    }
+    log.debug("Get stops:", this.model.bounds);
+    var self = this;
+    this.transit.requestStops(
+        this.model.bounds,
+        function(stops) {self.receiveStops(stops)}
+    ).send();
 }
 
 Presenter.prototype.receiveStops = function(stops) {
@@ -248,7 +238,6 @@ Presenter.prototype.receiveBuses = function(buses) {
             };
             log.debug("Update current buses:", bus);
             this.model.pushBus(bus);
-            this.model.pushRequiredStop(bus.destinationId);
         }
     }
     this.model.sortBuses();
@@ -261,14 +250,16 @@ function TransitClient(conf) {
 }
 
 TransitClient.prototype.requestStops = function(
-        position, radius, receiveStops) {
+        bounds, receiveStops) {
     var request = this.stopRequest;
     if (request) {
         request.stop();
     }
     this.stopRequest = request = new TransitRequest(
-        this.getUrl("/api/v1/stops"),
-        {lon: position.lng, lat: position.lat, r: radius}
+        this.getUrl("/api/v1/stops"), {
+            bbox: [bounds.west, bounds.south,
+                   bounds.east, bounds.north].join(',')
+        }
     );
     request.onRensponse = function (response) {
         receiveStops(response.stops);
@@ -368,7 +359,7 @@ function View() {
     this.presenter = new Presenter(this, this.model);
     this.latitude = document.getElementById('latitude');
     this.longitude = document.getElementById('longitude');
-    this.radius = document.getElementById('radius');
+    this.zoom = document.getElementById('zoom');
     this.busWindow = null;
 };
 
@@ -376,52 +367,59 @@ View.prototype.centerCurrentPosition = function () {
     this.presenter.centerCurrentPosition();
 }
 
-View.prototype.updatePosition = function () {
-    if (this.map) {
-        this.map.setCenter(this.model.position);
-    }
-    this.latitude.value = this.model.position.lat;
-    this.longitude.value = this.model.position.lng;
+View.prototype.centerPosition = function (position) {
+    this.map.setCenter(position);
 }
 
-View.prototype.updateRadius = function () {
-    this.radius.value = this.model.radius;
-    if (radius > 1000.) {
-        this.radius["border-color"] = "red";
-    } else {
-        this.radius["border-color"] = "black";
-   }
+View.prototype.updateCenter = function () {
+    if (this.map) {
+        var center = this.model.getCenter();
+        this.latitude.value = center.lat;
+        this.longitude.value = center.lng;
+    }
+}
+
+View.prototype.updateZoom = function () {
+    if (this.map) {
+        this.zoom.value = this.model.zoom;
+    }
 }
 
 View.prototype.initMap = function() {
     this.map = new google.maps.Map(
         document.getElementById('map'),
-        {center: this.model.position, zoom: 16}
+        {bounds: this.model.bounds, zoom: 16}
     );
 
     var self = this;
-    this.map.addListener('center_changed', function() {
-        var position = self.map.getCenter().toJSON();
-        self.presenter.setPosition(position);
-    });
-    this.map.addListener('zoom_changed', function() {
-        var zoom = self.map.getZoom() - 15;
-        var radius = 1000.;
-        while (zoom > 0) {
-            zoom--;
-            radius *= 0.5
-        }
-        while (zoom < 0) {
-            zoom++;
-            radius *= 2.
-        }
-        self.presenter.setRadius(radius);
-    });
 
-    this.busWindow = new google.maps.InfoWindow();
-    this.busWindow.addListener('closeclick', function() {
+    function boundsChanged() {
+        var bounds = self.map.getBounds().toJSON();
+        if (!isNaN(bounds.south) && !isNaN(bounds.north) &&
+            !isNaN(bounds.east) && !isNaN(bounds.west)) {
+            self.presenter.setBounds(bounds);
+        }
+    }
+    this.map.addListener('bounds_changed', boundsChanged);
+
+    function zoomChanged() {
+        self.presenter.setZoom(self.map.getZoom());
+    }
+    zoomChanged();
+    this.map.addListener('zoom_changed', zoomChanged);
+
+    var busWindowClosed = function() {
         self.presenter.setCurrentStop(null)
-    });
+    }
+    this.busWindow = new google.maps.InfoWindow();
+    this.busWindow.addListener('closeclick', busWindowClosed);
+
+    self.presenter.setZoom(self.map.getZoom());
+    var bounds = this.map.getBounds().toJSON();
+    if (!isNaN(bounds.south) && !isNaN(bounds.north) &&
+        !isNaN(bounds.east) && !isNaN(bounds.west)) {
+        self.presenter.setBounds(bounds);
+    }
 }
 
 View.prototype.dropStopMarker = function(stopId) {
@@ -503,8 +501,8 @@ function closeBusesWindow() {
 
 var view = new View();
 
-view.updatePosition();
-view.updateRadius();
+view.updateCenter();
+view.updateZoom();
 view.centerCurrentPosition();
 
 </script>
