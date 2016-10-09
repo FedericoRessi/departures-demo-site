@@ -59,8 +59,10 @@ var log = {
 
 function Model() {
     this.bounds = {
-        sw: {lat: 56.163357, lng: 10.216666},
-        ne :{lat: 56.163357, lng: 10.216666}
+        south: 52.66449765057875,
+        north: 52.66449765057875,
+        east: -8.632234899999958,
+        west: -8.632234899999958,
     };
     this.stops = {};
     this.currentStop = null;
@@ -155,7 +157,10 @@ Presenter.prototype.centerCurrentPosition = function() {
                     lng: position.coords.longitude
                 });
             },
-            log.error
+            function (msg) {
+                log.error("Unable to get user position:", msg);
+                self.view.centerPosition(self.model.getCenter());
+            }
         );
     } else {
         log.error("Geolocation is not supported by your browser.");
@@ -507,7 +512,9 @@ View.prototype.centerCurrentPosition = function () {
 }
 
 View.prototype.centerPosition = function (position) {
-    this.map.setCenter(position);
+    if (this.map) {
+        this.map.setCenter(position);
+    }
 }
 
 View.prototype.updateCenter = function () {
@@ -552,6 +559,8 @@ View.prototype.initMap = function() {
     }
     this.busWindow = new google.maps.InfoWindow();
     this.busWindow.addListener('closeclick', busWindowClosed);
+
+    view.centerCurrentPosition();
 }
 
 View.prototype.dropStopMarker = function(stopId) {
@@ -657,13 +666,10 @@ function closeBusesWindow() {
 
 var view = new View();
 
-view.updateCenter();
-view.updateZoom();
-view.centerCurrentPosition();
-
 </script>
 
-<script async defer
+<script
+    type="text/javascript"
     src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDwigDJTs6z4mYFvL8EqvEIecO5jNGq-a4&callback=view.initMap">
 </script>
 
